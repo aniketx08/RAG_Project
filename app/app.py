@@ -7,7 +7,7 @@ from utils import log_message
 if 'log_messages' not in st.session_state:
     st.session_state.log_messages = []
 
-st.title("RAG Demo with Nomic Embeddings & Groq LLM (API Mode)")
+st.title("RAG Demo with Nomic Embeddings & llama3.1")
 
 # Backend API URLs
 API_URL = "http://127.0.0.1:8000"

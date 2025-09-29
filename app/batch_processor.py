@@ -1,8 +1,7 @@
-# batch_processor.py
 import asyncio
 import time
 import uuid
-from typing import List, Dict, Any, Tuple
+from typing import List, Tuple
 from utils import log_message
 from dataclasses import dataclass
 
@@ -71,7 +70,6 @@ class BatchProcessor:
             try:
                 # Wait for requests or timeout
                 try:
-                    # Get first item or wait for timeout
                     if not batch_items:
                         item = await asyncio.wait_for(
                             self.batch_queue.get(), 
@@ -97,17 +95,15 @@ class BatchProcessor:
                         batch_items = []
                         
                 except asyncio.TimeoutError:
-                    # No requests came in, continue waiting
                     continue
                     
             except Exception as e:
                 log_message(f"Error in batch processor: {e}")
-                # Clear any failed batch items
                 for item in batch_items:
                     if not item.future.done():
                         item.future.set_exception(e)
                 batch_items = []
-                await asyncio.sleep(1)  # Brief pause before retrying
+                await asyncio.sleep(1)
 
     async def _process_batch(self, batch_items: List[BatchRequestItem]):
         """Process a batch of requests together"""
@@ -133,7 +129,6 @@ class BatchProcessor:
                     context, has_relevant_content, error_msg = await task
                     
                     if not has_relevant_content:
-                        # No relevant documents found - respond appropriately
                         response_msg = (error_msg if error_msg else 
                                       "I don't have information about this topic in my knowledge base. "
                                       "Please ensure you've ingested relevant documents first.")
@@ -142,7 +137,6 @@ class BatchProcessor:
                         continue
                         
                     item.context = context
-                    # Build prompt for this item
                     item.prompt = self.rag_chain.prompt_template.format(
                         context=item.context, 
                         question=item.question
@@ -162,27 +156,20 @@ class BatchProcessor:
                 log_message("No successful items to process in batch")
                 return
             
-            # Step 3: Create combined batch prompt for LLM
-            batch_prompt = self._create_batch_prompt(successful_items)
-            
-            # Step 4: Send single request to LLM
-            log_message(f"Sending batch prompt to LLM for {len(successful_items)} questions")
-            try:
-                batch_response = await self.rag_chain.llm(batch_prompt)
-                
-                # Step 5: Parse and distribute responses
-                answers = self._parse_batch_response(batch_response, successful_items)
-                
-                # Step 6: Set results for each future
-                for item, answer in zip(successful_items, answers):
+            # Step 3: Send to LLM (batch or individual)
+            if len(successful_items) == 1:
+                # Single request - use individual processing
+                item = successful_items[0]
+                try:
+                    answer = await self.rag_chain.llm(item.prompt)
                     if not item.future.done():
                         item.future.set_result(answer)
-                        
-            except Exception as e:
-                log_message(f"Error in batch LLM call: {e}")
-                for item in successful_items:
+                except Exception as e:
                     if not item.future.done():
                         item.future.set_exception(e)
+            else:
+                # Multiple requests - use batch processing
+                await self._process_batch_llm(successful_items)
                         
         except Exception as e:
             log_message(f"Error in _process_batch: {e}")
@@ -190,29 +177,49 @@ class BatchProcessor:
                 if not item.future.done():
                     item.future.set_exception(e)
 
-    async def _retrieve_context(self, question: str) -> Tuple[str, bool, str]:
-        """Retrieve context for a single question and return context + relevance info"""
+    async def _process_batch_llm(self, successful_items: List[BatchRequestItem]):
+        """Process multiple items with batch LLM call"""
         try:
-            # Run the synchronous retrieval in a thread pool
+            batch_prompt = self._create_batch_prompt(successful_items)
+            
+            log_message(f"Sending batch prompt to LLM for {len(successful_items)} questions")
+            log_message(f"Batch prompt preview: {batch_prompt[:500]}...")
+            
+            batch_response = await self.rag_chain.llm(batch_prompt)
+            log_message(f"Batch response preview: {batch_response[:500]}...")
+            
+            answers = self._parse_batch_response(batch_response, successful_items)
+            
+            for i, (item, answer) in enumerate(zip(successful_items, answers)):
+                log_message(f"Answer {i+1}: {answer[:100]}...")
+                if not item.future.done():
+                    item.future.set_result(answer)
+                    
+        except Exception as e:
+            log_message(f"Error in batch LLM call: {e}")
+            for item in successful_items:
+                if not item.future.done():
+                    item.future.set_exception(e)
+
+    async def _retrieve_context(self, question: str) -> Tuple[str, bool, str]:
+        """Retrieve context for a single question using the RAG chain directly"""
+        try:
             loop = asyncio.get_event_loop()
             docs = await loop.run_in_executor(
                 None, 
-                self.rag_chain.retriever.get_relevant_documents, 
+                self.rag_chain.get_relevant_documents,
                 question
             )
             
             if not docs:
                 return "", False, "No documents found in the knowledge base."
             
-            # Check if documents have meaningful content (not just empty or very short)
             meaningful_docs = [doc for doc in docs if len(doc.page_content.strip()) > 50]
             
             if not meaningful_docs:
                 return "", False, "No relevant documents found for this question."
             
-            context = "\n".join([d.page_content for d in meaningful_docs])
-            
-            # Simple relevance check - you can make this more sophisticated
+            context = "\n\n".join([d.page_content for d in meaningful_docs])
             has_relevant_content = len(context.strip()) > 100
             
             return context, has_relevant_content, ""
@@ -222,64 +229,79 @@ class BatchProcessor:
             return "", False, f"Error retrieving documents: {e}"
 
     def _create_batch_prompt(self, items: List[BatchRequestItem]) -> str:
-        """Create a single prompt that asks the LLM to answer multiple questions"""
-        batch_prompt = """You are a strict document-based question answering assistant. You must ONLY answer questions based on the provided context documents. 
+        """Create a single prompt that asks the LLM to answer multiple questions with clearly marked responses"""
+        
+        batch_prompt = """You are a helpful AI assistant. I will provide you with multiple questions and their contexts. Please answer each question thoroughly based on the provided context.
 
-IMPORTANT RULES:
-1. If the context doesn't contain information to answer a question, respond with "I don't have enough information in the provided documents to answer this question."
-2. Do not use your general knowledge or training data
-3. Only use information explicitly stated in the context provided for each question
-4. Be precise and cite specific information from the context
-
-Format your response as follows:
-ANSWER_1: [your answer to question 1 based only on context 1]
-ANSWER_2: [your answer to question 2 based only on context 2]
-...and so on.
-
-Here are the questions and their contexts:
+IMPORTANT: Start each answer with exactly "ANSWER_X:" where X is the question number (1, 2, 3, etc.).
 
 """
         
         for i, item in enumerate(items, 1):
-            batch_prompt += f"""
-QUESTION_{i}: {item.question}
-CONTEXT_{i}: {item.context}
+            batch_prompt += f"""QUESTION {i}: {item.question}
 
-"""
+CONTEXT {i}: {item.context}
+
+ANSWER_{i}: """
+            
+            if i < len(items):
+                batch_prompt += "\n\n" + "="*50 + "\n\n"
         
-        batch_prompt += f"\nRemember: Answer ONLY based on the provided contexts. If a context doesn't contain the answer, say you don't have enough information. Provide {len(items)} answers in the format specified above."
         return batch_prompt
 
     def _parse_batch_response(self, response: str, items: List[BatchRequestItem]) -> List[str]:
         """Parse the LLM's batch response and extract individual answers"""
+        log_message(f"Parsing response for {len(items)} questions")
+        
         answers = []
-        lines = response.strip().split('\n')
         
-        # Look for ANSWER_X: patterns
-        current_answer = ""
-        answer_index = 0
+        # Split by ANSWER_X: markers
+        import re
         
-        for line in lines:
-            line = line.strip()
-            if line.startswith(f"ANSWER_{answer_index + 1}:"):
-                if current_answer and answer_index < len(items):
-                    answers.append(current_answer.strip())
-                current_answer = line[len(f"ANSWER_{answer_index + 1}:"):].strip()
-                answer_index += 1
-            elif line.startswith("ANSWER_") and ":" in line:
-                # Handle any ANSWER_X: format
-                if current_answer and len(answers) < len(items):
-                    answers.append(current_answer.strip())
-                current_answer = line.split(":", 1)[1].strip()
-            else:
-                if current_answer:
-                    current_answer += " " + line
+        # Find all ANSWER_X: patterns and their positions
+        answer_pattern = r'ANSWER_(\d+):\s*'
+        matches = list(re.finditer(answer_pattern, response))
         
-        # Add the last answer
-        if current_answer and len(answers) < len(items):
-            answers.append(current_answer.strip())
+        if not matches:
+            log_message("No ANSWER_X: markers found, trying fallback parsing")
+            # Fallback: try to split by common separators
+            parts = re.split(r'\n\s*={10,}\s*\n|\n\s*-{10,}\s*\n|\n\n\n+', response)
+            for i, part in enumerate(parts):
+                if i < len(items):
+                    clean_answer = part.strip()
+                    if clean_answer:
+                        answers.append(clean_answer)
+        else:
+            log_message(f"Found {len(matches)} ANSWER markers")
+            
+            for i in range(len(matches)):
+                answer_num = int(matches[i].group(1))
+                start_pos = matches[i].end()
+                
+                # Find end position (start of next answer or end of string)
+                if i + 1 < len(matches):
+                    end_pos = matches[i + 1].start()
+                else:
+                    end_pos = len(response)
+                
+                answer_text = response[start_pos:end_pos].strip()
+                
+                # Remove any trailing separators
+                answer_text = re.sub(r'\s*={10,}\s*$', '', answer_text)
+                answer_text = re.sub(r'\s*-{10,}\s*$', '', answer_text)
+                
+                # Ensure we have the answer in the right order
+                while len(answers) < answer_num:
+                    answers.append("I couldn't generate an answer for this question.")
+                
+                if answer_num <= len(answers):
+                    answers[answer_num - 1] = answer_text
+                else:
+                    answers.append(answer_text)
+                
+                log_message(f"Parsed answer {answer_num}: {answer_text[:100]}...")
         
-        # Ensure we have the right number of answers
+        # Ensure we have exactly the right number of answers
         while len(answers) < len(items):
             answers.append("I couldn't generate an answer for this question.")
         
