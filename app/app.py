@@ -15,8 +15,6 @@ INGEST_URL = f"{API_URL}/ingest"
 QA_URL = f"{API_URL}/qa"
 STATUS_URL = f"{API_URL}/status"
 
-
-
 if st.session_state.log_messages:
     with st.expander("View Logs"):
         for msg in st.session_state.log_messages:

@@ -11,12 +11,9 @@ from llm import OllamaLLM
 from document_loaders import load_pdf, load_web
 from text_splitter import split_documents
 from utils import log_message
-from batch_processor import BatchProcessor
-import threading
 from typing import List, Dict, Any
 import os
-
-
+import asyncio
 
 # Setup App
 app = FastAPI(title="RAG API", version="1.0")
@@ -34,24 +31,17 @@ app.add_middleware(
 rag_chain = None
 embeddings = NomicEmbeddings()
 llm = OllamaLLM()
-batch_processor = None
-rag_lock = threading.Lock()
+qa_lock = asyncio.Lock()  # Lock for sequential QA processing
 
 class QARequest(BaseModel):
     question: str
 
 def initialize_rag_chain():
     """Initialize RAG chain with Milvus integration"""
-    global rag_chain, batch_processor
+    global rag_chain
     
     try:
         rag_chain = CustomRAGChain(embeddings, llm, PROMPT)
-        batch_processor = BatchProcessor(
-            rag_chain=rag_chain,
-            batch_size=3,
-            batch_timeout=2.0
-        )
-        
         log_message("RAG chain initialized successfully")
         return rag_chain
         
@@ -64,17 +54,11 @@ initialize_rag_chain()
 
 @app.on_event("startup")
 async def startup_event():
-    global batch_processor
-    if batch_processor:
-        await batch_processor.start()
-        log_message("Batch processor started")
+    log_message("FastAPI application started")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global batch_processor, llm
-    if batch_processor:
-        await batch_processor.stop()
-        log_message("Batch processor stopped")
+    global llm
     if llm:
         await llm.close()
         log_message("LLM session closed")
@@ -117,8 +101,7 @@ async def process_ingestion(file_content: bytes = None, filename: str = None, ur
         docs = await run_in_threadpool(split_documents, docs)
 
         # Add documents to RAG chain
-        with rag_lock:
-            result = rag_chain.add_documents(docs)
+        result = rag_chain.add_documents(docs)
         
         return result
     
@@ -145,39 +128,14 @@ async def ingest_documents(file: UploadFile = File(None), url: str = Form(None))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
-@app.post("/ingest/batch")
-async def batch_ingest_documents(files: List[UploadFile] = File([]), urls: List[str] = Form([])):
-    """Batch document ingestion endpoint"""
-    try:
-        total_docs = 0
-        results = []
-        
-        # Process files
-        for file in files:
-            if file.filename and file.filename.endswith('.pdf'):
-                file_content = await file.read()
-                result = await process_ingestion(file_content, file.filename, None)
-                total_docs += result.get("doc_count", 0)
-                results.append({"filename": file.filename, "result": result})
-        
-        # Process URLs
-        for url in urls:
-            result = await process_ingestion(None, None, url)
-            total_docs += result.get("doc_count", 0)
-            results.append({"url": url, "result": result})
-        
-        return {
-            "total_documents": total_docs,
-            "results": results,
-            "message": f"Batch ingestion completed with {total_docs} total documents"
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.post("/qa")
 async def question_answer(req: QARequest):
-    """QA endpoint - generates embedding, searches Milvus, sends context to LLM"""
+    """
+    QA endpoint - processes ONE request at a time (sequential)
+    Other requests will wait in queue until the current one completes
+    """
+    global qa_lock
+    
     try:
         if not rag_chain:
             raise HTTPException(
@@ -185,10 +143,15 @@ async def question_answer(req: QARequest):
                 detail="RAG chain not initialized. Please ingest documents first."
             )
         
-        if not batch_processor:
-            raise HTTPException(status_code=500, detail="Batch processor not initialized.")
+        # Acquire lock - only one request can proceed at a time
+        async with qa_lock:
+            log_message(f"[PROCESSING] QA request: {req.question[:50]}...")
+            
+            # Call RAG chain's async run method
+            answer = await rag_chain.run(req.question)
+            
+            log_message(f"[COMPLETED] QA request: {req.question[:50]}...")
         
-        answer = await batch_processor.add_request(req.question, timeout=300.0)
         return {"answer": answer}
             
     except HTTPException:
@@ -197,22 +160,6 @@ async def question_answer(req: QARequest):
         log_message(f"Error in QA endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    try:
-        from pymilvus import MilvusClient
-        client = MilvusClient(uri="http://127.0.0.1:19530")
-        milvus_status = "connected"
-    except:
-        milvus_status = "disconnected"
-    
-    return {
-        "status": "healthy",
-        "milvus": milvus_status,
-        "rag_chain": "initialized" if rag_chain else "not_initialized",
-        "batch_processor": "running" if batch_processor else "not_running"
-    }
 
 # Add LangServe routes
 if rag_chain:
@@ -220,4 +167,5 @@ if rag_chain:
 
 if __name__ == "__main__":
     import uvicorn
+    # Single worker for simplicity, but async handles concurrency
     uvicorn.run(app, host="0.0.0.0", port=8000, workers=1)

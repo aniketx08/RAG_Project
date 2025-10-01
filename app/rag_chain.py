@@ -2,10 +2,6 @@ from langchain_core.runnables import Runnable
 from pymilvus import MilvusClient
 from utils import log_message
 import asyncio
-import threading
-
-# Thread lock for concurrent operations
-milvus_lock = threading.Lock()
 
 class CustomRAGChain(Runnable):
     def __init__(self, embeddings, llm, prompt_template, collection_name="rag_demo_local"):
@@ -14,7 +10,7 @@ class CustomRAGChain(Runnable):
         self.prompt_template = prompt_template
         self.collection_name = collection_name
         self.client = None
-        self.document_count = 0  # Track number of documents
+        self.document_count = 0
         self._initialize_milvus()
 
     def _initialize_milvus(self):
@@ -24,38 +20,29 @@ class CustomRAGChain(Runnable):
             
             self.client = MilvusClient(uri="http://127.0.0.1:19530")
             
-            with milvus_lock:
-                log_message(f"Setting up collection '{self.collection_name}'...")
-                
-                # Get dimension from embeddings
-                log_message("Getting embedding dimension...")
-                sample_vector = self.embeddings.embed_query("sample text for dimension")
-                dimension = len(sample_vector)
-                log_message(f"Embedding dimension: {dimension}")
-                
-                # Create collection if it doesn't exist
-                if not self.client.has_collection(collection_name=self.collection_name):
-                    log_message("Creating new collection...")
-                    self.client.create_collection(
-                        collection_name=self.collection_name,
-                        dimension=dimension,
-                        metric_type="IP",
-                        consistency_level="Bounded",
-                        auto_id=True
-                    )
-                    log_message(f"Collection '{self.collection_name}' created with dimension {dimension}")
-                else:
-                    log_message(f"Collection '{self.collection_name}' already exists")
-                    # Get current document count
-                    try:
-                        stats = self.client.get_collection_stats(collection_name=self.collection_name)
-                        self.document_count = stats.get('row_count', 0)
-                        log_message(f"Found {self.document_count} existing documents in collection")
-                    except:
-                        log_message("Could not get collection stats")
+            log_message(f"Setting up collection '{self.collection_name}'...")
             
-            log_message("Milvus RAG chain initialized successfully!")
-            
+            # Create collection if it doesn't exist
+            if not self.client.has_collection(collection_name=self.collection_name):
+                log_message("Creating new collection...")
+                self.client.create_collection(
+                    collection_name=self.collection_name,
+                    dimension=dimension,
+                    metric_type="IP",
+                    consistency_level="Bounded",
+                    auto_id=True
+                )
+                log_message(f"Collection '{self.collection_name}' created with dimension {dimension}")
+            else:
+                log_message(f"Collection '{self.collection_name}' already exists")
+                # Get current document count
+                try:
+                    stats = self.client.get_collection_stats(collection_name=self.collection_name)
+                    self.document_count = stats.get('row_count', 0)
+                    log_message(f"Found {self.document_count} existing documents in collection")
+                except:
+                    log_message("Could not get collection stats")
+                        
         except Exception as e:
             error_msg = f"Error initializing Milvus: {str(e)}"
             log_message(error_msg)
@@ -69,7 +56,6 @@ class CustomRAGChain(Runnable):
             # Generate query embedding
             log_message("Generating query embedding...")
             query_vector = self.embeddings.embed_query(query)
-            log_message(f"Query embedding generated (dimension: {len(query_vector)})")
             
             # Search Milvus
             log_message(f"Searching Milvus for {k} most relevant documents...")
@@ -116,52 +102,51 @@ class CustomRAGChain(Runnable):
             return {"message": "No documents to add", "doc_count": 0}
         
         try:
-            with milvus_lock:
-                log_message(f"Adding {len(docs)} document chunks to Milvus...")
-                                
-                # Show sample chunks
-                for i, doc in enumerate(docs[:3]):
-                    log_message(f"Sample chunk {i+1} (length {len(doc.page_content)}): '{doc.page_content[:100]}...'")
+            log_message(f"Adding {len(docs)} document chunks to Milvus...")
+                            
+            # Show sample chunks
+            for i, doc in enumerate(docs[:3]):
+                log_message(f"Sample chunk {i+1} (length {len(doc.page_content)}): '{doc.page_content[:100]}...'")
+            
+            # Generate embeddings for all documents
+            log_message("Generating embeddings for document chunks...")
+            text_contents = [doc.page_content for doc in docs]
+            vectors = self.embeddings.embed_documents(text_contents)
+            log_message(f"Generated {len(vectors)} embeddings")
+            
+            # Prepare data for insertion
+            data = []
+            for i, (doc, vector) in enumerate(zip(docs, vectors)):
+                if not hasattr(doc, "metadata") or doc.metadata is None:
+                    doc.metadata = {}
                 
-                # Generate embeddings for all documents
-                log_message("Generating embeddings for document chunks...")
-                text_contents = [doc.page_content for doc in docs]
-                vectors = self.embeddings.embed_documents(text_contents)
-                log_message(f"Generated {len(vectors)} embeddings")
-                
-                # Prepare data for insertion
-                data = []
-                for i, (doc, vector) in enumerate(zip(docs, vectors)):
-                    if not hasattr(doc, "metadata") or doc.metadata is None:
-                        doc.metadata = {}
-                    
-                    doc_data = {
-                        "vector": vector,
-                        "text": doc.page_content,
-                        "source": str(doc.metadata.get("source", "unknown")),
-                        "type": str(doc.metadata.get("type", "general"))
-                    }
-                    data.append(doc_data)
-                    
-                    if i < 3:  # Log first few entries
-                        log_message(f"Prepared data entry {i+1}: source='{doc_data['source']}', text_length={len(doc_data['text'])}")
-                
-                # Insert into Milvus
-                log_message("Inserting data into Milvus...")
-                result = self.client.insert(collection_name=self.collection_name, data=data)
-                
-                inserted_count = result.get('insert_count', 0)
-                self.document_count += inserted_count
-                
-                log_message(f"Successfully inserted {inserted_count} document chunks")
-                log_message(f"Total documents in collection: {self.document_count}")
-                
-                return {
-                    "doc_count": inserted_count,
-                    "total_docs": self.document_count,
-                    "message": f"Successfully added {inserted_count} document chunks (total: {self.document_count})"
+                doc_data = {
+                    "vector": vector,
+                    "text": doc.page_content,
+                    "source": str(doc.metadata.get("source", "unknown")),
+                    "type": str(doc.metadata.get("type", "general"))
                 }
+                data.append(doc_data)
                 
+                if i < 3:  # Log first few entries
+                    log_message(f"Prepared data entry {i+1}: source='{doc_data['source']}', text_length={len(doc_data['text'])}")
+            
+            # Insert into Milvus
+            log_message("Inserting data into Milvus...")
+            result = self.client.insert(collection_name=self.collection_name, data=data)
+            
+            inserted_count = result.get('insert_count', 0)
+            self.document_count += inserted_count
+            
+            log_message(f"Successfully inserted {inserted_count} document chunks")
+            log_message(f"Total documents in collection: {self.document_count}")
+            
+            return {
+                "doc_count": inserted_count,
+                "total_docs": self.document_count,
+                "message": f"Successfully added {inserted_count} document chunks (total: {self.document_count})"
+            }
+            
         except Exception as e:
             error_msg = f"Error adding documents: {str(e)}"
             log_message(error_msg)
@@ -202,11 +187,15 @@ class CustomRAGChain(Runnable):
             raise
 
     async def run(self, question: str) -> str:
-        """Async version with enhanced logging"""            
+        """
+        Async version - handles each request independently
+        Multiple concurrent calls will run in parallel
+        """            
         try:
             log_message(f"RAG Chain async run called with question: '{question[:100]}...'")
             
-            docs = self.get_relevant_documents(question)
+            # Retrieve relevant documents (synchronous operation)
+            docs = await asyncio.to_thread(self.get_relevant_documents, question)
             
             if not docs:
                 context = "No relevant information found in the knowledge base."
@@ -216,11 +205,9 @@ class CustomRAGChain(Runnable):
             
             prompt = self.prompt_template.format(context=context, question=question)
             
+            # Call LLM asynchronously - this is where concurrent execution happens
             log_message("Calling LLM asynchronously...")
-            if asyncio.iscoroutinefunction(self.llm):
-                answer = await self.llm(prompt)
-            else:
-                answer = self.llm(prompt)
+            answer = await self.llm(prompt)
             
             log_message("LLM response received")
             return answer
