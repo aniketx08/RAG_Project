@@ -1,5 +1,5 @@
 # prompt_template.py
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 
 PROMPT_TEMPLATE = """
 You are a  document-based question-answering assistant. You must ONLY answer questions based on the provided context from the knowledge base.

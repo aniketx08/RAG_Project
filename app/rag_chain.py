@@ -18,7 +18,7 @@ class CustomRAGChain(Runnable):
         try:
             log_message("Initializing Milvus client...")
             
-            self.client = MilvusClient(uri="http://127.0.0.1:19530")
+            self.client = MilvusClient(uri="tcp://127.0.0.1:19530")
             
             log_message(f"Setting up collection '{self.collection_name}'...")
             
@@ -27,7 +27,7 @@ class CustomRAGChain(Runnable):
                 log_message("Creating new collection...")
                 self.client.create_collection(
                     collection_name=self.collection_name,
-                    dimension=dimension,
+                    dimension=self.embeddings.dimension,
                     metric_type="IP",
                     consistency_level="Bounded",
                     auto_id=True
