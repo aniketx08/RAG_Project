@@ -2,6 +2,7 @@ from langchain_core.runnables import Runnable
 from pymilvus import MilvusClient
 from utils import log_message
 import asyncio
+from memory import get_recent_messages, save_message
 
 class CustomRAGChain(Runnable):
     def __init__(self, embeddings, llm, prompt_template, collection_name="rag_demo_local"):
@@ -14,39 +15,24 @@ class CustomRAGChain(Runnable):
         self._initialize_milvus()
 
     def _initialize_milvus(self):
-        """Initialize Milvus client with proper schema"""
-        try:
-            log_message("Initializing Milvus client...")
-            
-            self.client = MilvusClient(uri="tcp://127.0.0.1:19530")
-            
-            log_message(f"Setting up collection '{self.collection_name}'...")
-            
-            # Create collection if it doesn't exist
-            if not self.client.has_collection(collection_name=self.collection_name):
-                log_message("Creating new collection...")
-                self.client.create_collection(
-                    collection_name=self.collection_name,
-                    dimension=self.embeddings.dimension,
-                    metric_type="IP",
-                    consistency_level="Bounded",
-                    auto_id=True
-                )
-                log_message(f"Collection '{self.collection_name}' created with dimension {dimension}")
-            else:
-                log_message(f"Collection '{self.collection_name}' already exists")
-                # Get current document count
-                try:
-                    stats = self.client.get_collection_stats(collection_name=self.collection_name)
-                    self.document_count = stats.get('row_count', 0)
-                    log_message(f"Found {self.document_count} existing documents in collection")
-                except:
-                    log_message("Could not get collection stats")
-                        
-        except Exception as e:
-            error_msg = f"Error initializing Milvus: {str(e)}"
-            log_message(error_msg)
-            raise Exception(error_msg)
+        log_message("Initializing Milvus client...")
+        self.client = MilvusClient(uri="tcp://127.0.0.1:19530")
+
+        if not self.client.has_collection(self.collection_name):
+            log_message("Creating new collection...")
+
+            self.client.create_collection(
+                collection_name=self.collection_name,
+                dimension=self.embeddings.dimension,
+                metric_type="IP",
+                consistency_level="Bounded",
+                auto_id=True,
+                enable_dynamic_field=True   # 🔑 THIS enables JSON payload
+            )
+
+            log_message(f"Collection '{self.collection_name}' created")
+
+
 
     def get_relevant_documents(self, query, k=3):
         """Generate embedding and search Milvus with detailed logging"""
@@ -63,25 +49,27 @@ class CustomRAGChain(Runnable):
                 collection_name=self.collection_name,
                 data=[query_vector],
                 limit=k,
-                search_params={"metric_type":"IP","params":{}},
-                output_fields=["text", "source", "type"]
+                search_params={"metric_type": "IP", "params": {}},
+                output_fields=["payload"]
             )
+
             
             documents = []
             if results and results[0]:
                 log_message(f"Found {len(results[0])} search results")
                 for i, result in enumerate(results[0]):
                     distance = result.get("distance", 0)
-                    text_preview = result["entity"]["text"][:100]
+                    payload = result["entity"]["payload"]
+                    text_preview = payload["text"][:100]
                     log_message(f"Result {i+1}: distance={distance:.4f}, text='{text_preview}...'")
                     
                     doc = type('Document', (), {
-                        'page_content': result["entity"]["text"],
+                        'page_content': payload["text"],
                         'metadata': {
-                            'source': result["entity"].get("source", "unknown"),
-                            'type': result["entity"].get("type", "general"),
+                            'source': payload.get("source", "unknown"),
+                            'type': payload.get("type", "general"),
                             'distance': distance,
-                            'chunk_length': len(result["entity"]["text"])
+                            'chunk_length': len(payload["text"])
                         }
                     })()
                     documents.append(doc)
@@ -120,17 +108,15 @@ class CustomRAGChain(Runnable):
                 if not hasattr(doc, "metadata") or doc.metadata is None:
                     doc.metadata = {}
                 
-                doc_data = {
+                data.append({
                     "vector": vector,
-                    "text": doc.page_content,
-                    "source": str(doc.metadata.get("source", "unknown")),
-                    "type": str(doc.metadata.get("type", "general"))
-                }
-                data.append(doc_data)
-                
-                if i < 3:  # Log first few entries
-                    log_message(f"Prepared data entry {i+1}: source='{doc_data['source']}', text_length={len(doc_data['text'])}")
-            
+                    "payload": {
+                        "text": doc.page_content,
+                        "source": doc.metadata.get("source", "unknown"),
+                        "type": doc.metadata.get("type", "general")
+                    }
+                })
+       
             # Insert into Milvus
             log_message("Inserting data into Milvus...")
             result = self.client.insert(collection_name=self.collection_name, data=data)
@@ -186,13 +172,18 @@ class CustomRAGChain(Runnable):
             log_message(error_msg)
             raise
 
-    async def run(self, question: str) -> str:
+    async def run(self, question: str, user_id: str) -> str:
         """
         Async version - handles each request independently
         Multiple concurrent calls will run in parallel
         """            
         try:
             log_message(f"RAG Chain async run called with question: '{question[:100]}...'")
+
+            messages = get_recent_messages(user_id)
+            chat_history = "\n".join(
+                [f"{m['role'].capitalize()}: {m['content']}" for m in messages]
+            )
             
             # Retrieve relevant documents (synchronous operation)
             docs = await asyncio.to_thread(self.get_relevant_documents, question)
@@ -203,15 +194,22 @@ class CustomRAGChain(Runnable):
                 context = "\n\n".join([d.page_content for d in docs])
                 log_message(f"Context prepared from {len(docs)} documents")
             
-            prompt = self.prompt_template.format(context=context, question=question)
+            prompt = self.prompt_template.format(
+                chat_history=chat_history,
+                context=context,
+                question=question
+            )
             
             # Call LLM asynchronously - this is where concurrent execution happens
             log_message("Calling LLM asynchronously...")
-            answer = await self.llm(prompt)
-            
+            answer = await self.llm(prompt)     
+
+            save_message(user_id, "user", question)
+            save_message(user_id, "assistant", answer)
+
             log_message("LLM response received")
-            return answer
-            
+            return answer     
+
         except Exception as e:
             error_msg = f"Error in RAG chain run: {str(e)}"
             log_message(error_msg)

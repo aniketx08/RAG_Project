@@ -1,64 +1,39 @@
-import React from "react";
-import { useRole } from "../auth/useRole";
+import { Link } from "react-router-dom";
+import { motion } from "framer-motion";
 import { SignOutButton } from "@clerk/clerk-react";
 
-const Navbar = () => {
-  const role = useRole();
-
+export default function Navbar2() {
   return (
-    <nav className="p-4 bg-white/70 backdrop-blur-lg border-b border-white/50 shadow-sm flex justify-between items-center">
-      {/* Logo */}
-      <div className="flex items-center gap-2">
-        <div className="w-8 h-8 bg-gradient-to-br from-blue-600 to-blue-800 rounded-lg flex items-center justify-center shadow-md">
-          <svg
-            className="w-4 h-4 text-white"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-            />
-          </svg>
-        </div>
-        <h1 className="font-bold text-xl text-slate-800 tracking-tight">
-          Legal AI
-        </h1>
-      </div>
+    <motion.nav
+      initial={{ y: -20, opacity: 0 }}
+      animate={{ y: 0, opacity: 1 }}
+      transition={{ duration: 0.6 }}
+      className="sticky top-0 z-50 bg-black/80 backdrop-blur border-b border-amber-700 shadow-md"
+    >
+      <div className="w-full flex items-center justify-between px-12 py-6">
 
-      {/* Right side */}
-      <div className="flex items-center gap-4">
-        {role ? (
-          <span className="text-slate-600 text-sm flex items-center gap-2">
-            <svg
-              className="w-4 h-4 text-blue-600"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
-              />
-            </svg>
-            Logged in as: <span className="font-medium text-slate-800">{role}</span>
-          </span>
-        ) : (
-          <span className="text-slate-500 text-sm">Not logged in</span>
-        )}
+        {/* LOGO */}
+        <Link to="/" className="relative">
+          {/* Optional subtle glow behind the logo */}
+          <motion.div
+            animate={{ opacity: [0.3, 1, 0.3] }}
+            transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut" }}
+            className="absolute -inset-[4px] rounded-lg bg-amber-500/20 blur-md"
+          />
+          <h1 className="relative text-4xl font-extrabold">
+            <span className="text-white">Legal</span>
+            <span className="text-amber-500">AI</span>
+          </h1>
+        </Link>
+
+        {/* LOGOUT BUTTON */}
         <SignOutButton>
-          <button className="px-4 py-2 bg-gradient-to-r from-red-500 to-red-600 text-white text-sm font-semibold rounded-xl shadow-md shadow-red-500/20 hover:shadow-lg hover:shadow-red-500/30 hover:from-red-600 hover:to-red-700 transform hover:-translate-y-0.5 transition-all duration-200">
+          <button className="relative px-6 py-2 rounded-lg bg-amber-600 border border-white text-black font-semibold hover:bg-amber-500 hover:shadow-lg transition shadow-amber-500/30">
             Logout
           </button>
         </SignOutButton>
-      </div>
-    </nav>
-  );
-};
 
-export default Navbar;
+      </div>
+    </motion.nav>
+  );
+}

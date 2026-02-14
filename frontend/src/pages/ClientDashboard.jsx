@@ -1,24 +1,50 @@
-import { useState } from "react";
+'use client';
+
+import { useState, useEffect, useRef } from "react";
 import { useAuth } from "@clerk/clerk-react";
-import { askQuestion } from "../services/api";
+import { askQuestion, fetchChats } from "../services/api";
+import { motion, AnimatePresence } from "framer-motion";
 
 export default function ClientDashboard() {
   const { getToken } = useAuth();
-
   const [question, setQuestion] = useState("");
-  const [answer, setAnswer] = useState("");
-  const [sources, setSources] = useState([]);
+  const [chat, setChat] = useState([]);
   const [loading, setLoading] = useState(false);
+  const sessionIdRef = useRef(crypto.randomUUID());
+  const chatEndRef = useRef(null);
+
+  // Load chat history
+  useEffect(() => {
+    async function loadChats() {
+      const token = await getToken();
+      const history = await fetchChats(token);
+      setChat(history);
+    }
+    loadChats();
+  }, []);
+
+  // Auto-scroll on new messages
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chat]);
 
   const handleAsk = async () => {
+    if (!question.trim()) return;
+
     try {
       setLoading(true);
       const token = await getToken();
 
-      const data = await askQuestion(question, token);
+      // Add user message immediately
+      setChat(prev => [...prev, { role: "user", content: question }]);
+      setQuestion("");
 
-      setAnswer(data.answer);
-      setSources(data.sources || []);
+      const data = await askQuestion(
+        { question, session_id: sessionIdRef.current },
+        token
+      );
+
+      setChat(prev => [...prev, { role: "assistant", content: data.answer }]);
     } catch (err) {
       alert("Error fetching answer");
     } finally {
@@ -27,139 +53,66 @@ export default function ClientDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex items-center justify-center p-6 relative overflow-hidden">
-      {/* Background decorative elements */}
-      <div className="absolute top-20 left-20 w-72 h-72 bg-blue-200 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-pulse" />
-      <div className="absolute bottom-20 right-20 w-72 h-72 bg-slate-200 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-pulse" />
+    <div className="relative min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-amber-950 flex flex-col items-center py-12 px-4">
+      <div className="fixed inset-0 z-0 flex justify-center items-start pointer-events-none">
+        <img
+          src="https://cdn.arturbanstatue.com/wp-content/uploads/2021/12/1-7.jpg" // Replace with your image path
+          alt="Justicia Statue"
+          className="w-full max-w-7xl opacity-10 object-contain filter brightness-200"
+        />
+      </div>
+      {/* Main chat container */}
+      <div className="relative z-10 w-[80vw] max-w-5xl flex flex-col bg-black/50 backdrop-blur-lg border border-amber-700 rounded-2xl shadow-2xl p-6 h-[80vh]">
 
-      {/* Main card */}
-      <div className="relative bg-white/70 backdrop-blur-lg rounded-2xl shadow-xl border border-white/50 p-10 max-w-2xl w-full">
-        {/* Header */}
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-12 h-12 bg-gradient-to-br from-blue-600 to-blue-800 rounded-xl flex items-center justify-center shadow-lg">
-            <svg
-              className="w-6 h-6 text-white"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-              />
-            </svg>
-          </div>
-          <h2 className="text-2xl font-bold text-slate-800 tracking-tight">
-            Ask a Legal Question
-          </h2>
+        {/* Chat messages scrollable */}
+        <div className="flex-1 overflow-y-auto mb-4 space-y-4 px-2">
+          <AnimatePresence initial={false}>
+            {chat.map((msg, idx) => (
+              <motion.div
+                key={idx}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.3 }}
+                className={`p-3 rounded-xl break-words max-w-[92%] ${
+                  msg.role === "user"
+                    ? "bg-amber-600 text-black self-end"
+                    : "bg-black/60 border border-amber-500 text-amber-100 self-start"
+                }`}
+              >
+                <strong>{msg.role === "user" ? "You" : "Assistant"}:</strong>
+                <p className="mt-1 whitespace-pre-wrap">{msg.content}</p>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+          <div ref={chatEndRef} />
         </div>
 
-        {/* Question textarea */}
-        <textarea
-          rows="4"
-          placeholder="Enter your legal question..."
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          className="w-full p-4 bg-white/50 border border-slate-200/60 rounded-xl text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-transparent resize-none transition-all duration-200"
-        />
+        {/* Input area */}
+        <div className="flex gap-3 items-center">
+          <textarea
+            rows="2"
+            placeholder="Type your legal question..."
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            className="flex-1 p-3 bg-black/50 border border-amber-700 rounded-xl text-amber-100 placeholder-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent resize-none transition-all duration-200"
+          />
+          <button
+            onClick={handleAsk}
+            disabled={loading}
+            className="bg-amber-600 text-black font-semibold px-6 py-3 rounded-xl shadow-lg hover:bg-amber-500 transition disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {loading ? "Thinking..." : "Send"}
+          </button>
+        </div>
 
-        {/* Ask button */}
-        <button
-          onClick={handleAsk}
-          disabled={loading}
-          className="mt-4 w-full bg-gradient-to-r from-blue-600 to-blue-700 text-white font-semibold py-3 px-6 rounded-xl shadow-lg shadow-blue-500/30 hover:shadow-xl hover:shadow-blue-500/40 hover:from-blue-700 hover:to-blue-800 transform hover:-translate-y-0.5 transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:transform-none disabled:hover:shadow-lg"
-        >
-          {loading ? (
-            <span className="flex items-center justify-center gap-2">
-              <svg
-                className="animate-spin h-5 w-5 text-white"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                />
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                />
-              </svg>
-              Thinking...
-            </span>
-          ) : (
-            "Ask"
-          )}
-        </button>
-
-        {/* Answer section */}
-        {answer && (
-          <div className="mt-6 p-6 bg-white/50 rounded-xl border border-slate-200/60">
-            <h3 className="text-lg font-semibold text-slate-800 mb-3 flex items-center gap-2">
-              <svg
-                className="w-5 h-5 text-blue-600"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                />
-              </svg>
-              Answer
-            </h3>
-            <p className="text-slate-600 leading-relaxed">{answer}</p>
-
-            {sources.length > 0 && (
-              <>
-                <h4 className="text-md font-semibold text-slate-800 mt-5 mb-2 flex items-center gap-2">
-                  <svg
-                    className="w-4 h-4 text-blue-600"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
-                    />
-                  </svg>
-                  Sources
-                </h4>
-                <ul className="space-y-1">
-                  {sources.map((src, idx) => (
-                    <li
-                      key={idx}
-                      className="text-slate-500 text-sm flex items-start gap-2"
-                    >
-                      <span className="text-blue-500 mt-1">•</span>
-                      {src}
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-          </div>
-        )}
-
-        {/* Disclaimer */}
-        <p className="mt-6 text-center text-xs text-slate-400">
-          Disclaimer: This is not legal advice.
-        </p>
       </div>
+
+      {/* Disclaimer */}
+      <p className="relative z-10 text-center text-sm text-amber-200 mt-4">
+        Disclaimer: This is not legal advice.
+      </p>
+
     </div>
   );
 }
