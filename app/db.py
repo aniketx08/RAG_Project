@@ -11,3 +11,4 @@ client = MongoClient(MONGO_URI)
 db = client["chatdb"]
 
 chat_memory_collection = db["chat_memory"]
+conversations_collection = db["conversations"]

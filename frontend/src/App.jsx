@@ -12,6 +12,7 @@ import Landing2 from "./components/Landing2";
 import About from "./components/About";
 import FAQ from "./components/FAQ";
 import Contact from "./components/Contact";
+import RedirectPage from "./pages/RedirectPage";
 
 function App() {
   return (
@@ -55,6 +56,7 @@ function App() {
         />
         <Route path="/signup" element={<Signup />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/redirect" element={<RedirectPage />} />
         <Route
           path="/client"
           element={

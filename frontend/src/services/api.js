@@ -13,7 +13,7 @@ export async function askQuestion(payload, token) {
   if (!res.ok) {
     throw new Error("QA failed");
   }
-
+ 
   return res.json();
 }
 
@@ -25,6 +25,31 @@ export async function fetchChats(token) {
   });
 
   if (!res.ok) throw new Error("Failed to fetch chats");
+
+  return res.json();
+}
+
+export async function createConversation(token) {
+  const res = await fetch(`${BACKEND_URL}/conversations`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  return res.json();
+}
+
+export async function getConversations(token) {
+  const res = await fetch(`${BACKEND_URL}/conversations`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  return res.json();
+}
+
+export async function getMessages(conversationId, token) {
+  const res = await fetch(`${BACKEND_URL}/messages/${conversationId}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
 
   return res.json();
 }

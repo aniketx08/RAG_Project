@@ -16,9 +16,23 @@ import os
 import asyncio
 from auth import get_current_user
 from memory import chat_memory_collection
+from db import conversations_collection
+from uuid import uuid4
+from datetime import datetime
+from fastapi import FastAPI, UploadFile, File
+from faster_whisper import WhisperModel
+import shutil
+import os
+from deep_translator import GoogleTranslator
+from title_prompt import TITLE_PROMPT
 
 # Setup App
 app = FastAPI(title="RAG API", version="1.0")
+
+# model = WhisperModel(
+#     "medium",
+#     device="cpu"
+# )
 
 # Add CORS middleware
 app.add_middleware(
@@ -37,6 +51,7 @@ qa_lock = asyncio.Lock()  # Lock for sequential QA processing
 
 class QARequest(BaseModel):
     question: str
+    conversation_id: str
 
 def initialize_rag_chain():
     """Initialize RAG chain with Milvus integration"""
@@ -64,6 +79,17 @@ async def shutdown_event():
     if llm:
         await llm.close()
         log_message("LLM session closed")
+
+
+async def generate_chat_title(llm, question: str):
+
+    prompt = TITLE_PROMPT.format(question=question)
+
+    response = await llm(prompt)
+
+    title = response.strip()
+
+    return title
 
 async def process_ingestion(
     file_content: bytes = None,
@@ -167,8 +193,25 @@ async def question_answer(req: QARequest, request: Request):
             log_message(f"[PROCESSING] QA request: {req.question[:50]}...")
 
             user_id = get_current_user(request)
+
+            # Check existing conversation
+            convo = conversations_collection.find_one({"_id": req.conversation_id})
+
+            if convo and convo["title"] == "New Chat":
+
+                title = await generate_chat_title(rag_chain.llm, req.question)
+
+                conversations_collection.update_one(
+                    {"_id": req.conversation_id},
+                    {"$set": {"title": title}}
+                )
+
             # Call RAG chain's async run method
-            answer = await rag_chain.run(question=req.question, user_id=user_id)
+            answer = await rag_chain.run(
+                question=req.question,
+                user_id=user_id,
+                conversation_id=req.conversation_id
+            )
             
             log_message(f"[COMPLETED] QA request: {req.question[:50]}...")
         
@@ -179,6 +222,50 @@ async def question_answer(req: QARequest, request: Request):
     except Exception as e:
         log_message(f"Error in QA endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+# @app.post("/transcribe")
+# async def transcribe(
+#     file: UploadFile = File(...),
+#     language: str = Form("auto")
+# ):
+
+#     file_path = f"temp_{file.filename}"
+
+#     with open(file_path, "wb") as buffer:
+#         shutil.copyfileobj(file.file, buffer)
+
+#     try:
+#         if language != "auto":
+#             segments, info = model.transcribe(
+#                 file_path,
+#                 language=language
+#             )
+#         else:
+#             segments, info = model.transcribe(file_path)
+
+#         transcript = ""
+#         for segment in segments:
+#             transcript += segment.text + " "
+
+#         return {"text": transcript.strip()}
+
+#     finally:
+#         if os.path.exists(file_path):
+#             os.remove(file_path)
+
+class TranslateRequest(BaseModel):
+    text: str
+    source_lang: str
+
+@app.post("/translate")
+async def translate(req: TranslateRequest):
+    translated = GoogleTranslator(
+        source=req.source_lang.split("-")[0],
+        target="en"
+    ).translate(req.text)
+
+    return {"translated_text": translated}
+
 
 from fastapi import Request
 
@@ -200,9 +287,61 @@ async def get_chats(request: Request):
         for c in chats
     ]
 
+from uuid import uuid4
+from db import conversations_collection
+
+@app.post("/conversations")
+async def create_conversation(request: Request):
+
+    user_id = get_current_user(request)
+
+    convo_id = str(uuid4())
+
+    conversations_collection.insert_one({
+        "_id": convo_id,
+        "user_id": user_id,
+        "title": "New Chat",
+        "created_at": datetime.utcnow()
+    })
+
+    return {"conversation_id": convo_id}
+
+@app.get("/conversations")
+async def get_conversations(request: Request):
+
+    user_id = get_current_user(request)
+
+    convos = conversations_collection.find({"user_id": user_id})
+
+    return [
+        {
+            "id": c["_id"],
+            "title": c["title"]
+        }
+        for c in convos
+    ]
+
+@app.get("/messages/{conversation_id}")
+async def get_messages(conversation_id: str, request: Request):
+
+    user_id = get_current_user(request)
+
+    msgs = chat_memory_collection.find({
+        "user_id": user_id,
+        "conversation_id": conversation_id
+    }).sort("created_at", 1)
+
+    return [
+        {
+            "role": m["role"],
+            "content": m["content"]
+        }
+        for m in msgs
+    ]
+
 # Add LangServe routes
 if rag_chain:
-    add_routes(app, rag_chain, path="/rag")
+    add_routes(app, rag_chain, path="/rag") 
 
 if __name__ == "__main__":
     import uvicorn

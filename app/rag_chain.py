@@ -172,7 +172,7 @@ class CustomRAGChain(Runnable):
             log_message(error_msg)
             raise
 
-    async def run(self, question: str, user_id: str) -> str:
+    async def run(self, question: str, user_id: str, conversation_id: str) -> str:
         """
         Async version - handles each request independently
         Multiple concurrent calls will run in parallel
@@ -180,7 +180,7 @@ class CustomRAGChain(Runnable):
         try:
             log_message(f"RAG Chain async run called with question: '{question[:100]}...'")
 
-            messages = get_recent_messages(user_id)
+            messages = get_recent_messages(user_id, conversation_id)
             chat_history = "\n".join(
                 [f"{m['role'].capitalize()}: {m['content']}" for m in messages]
             )
@@ -196,7 +196,7 @@ class CustomRAGChain(Runnable):
             
             prompt = self.prompt_template.format(
                 chat_history=chat_history,
-                context=context,
+                context=context, 
                 question=question
             )
             
@@ -204,8 +204,8 @@ class CustomRAGChain(Runnable):
             log_message("Calling LLM asynchronously...")
             answer = await self.llm(prompt)     
 
-            save_message(user_id, "user", question)
-            save_message(user_id, "assistant", answer)
+            save_message(user_id, conversation_id, "user", question)
+            save_message(user_id, conversation_id, "assistant", answer)
 
             log_message("LLM response received")
             return answer     

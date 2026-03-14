@@ -8,7 +8,7 @@ import { motion } from "framer-motion";
 export default function Login() {
   const { user, isLoaded } = useUser();
   const navigate = useNavigate();
-
+ 
   useEffect(() => {
     if (!isLoaded || !user) return;
 
@@ -39,7 +39,12 @@ export default function Login() {
           className="w-full max-w-md bg-slate-900/80 backdrop-blur-md border border-slate-700 rounded-2xl shadow-2xl p-8"
         >
           <SignedOut>
-            <SignIn path="/login" signUpUrl="/signup" />
+            <SignIn
+  path="/login"
+  signUpUrl="/signup"
+  afterSignInUrl="/redirect"
+  afterSignUpUrl="/redirect"
+/>
           </SignedOut>
 
           <SignedIn>
